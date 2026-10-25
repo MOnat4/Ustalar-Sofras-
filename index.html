@@ -1,0 +1,232 @@
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Sesli Sohbet</title>
+<style>
+:root{--bg:#f5f5f7;--card:#fff;--text:#1d1d1f;--mute:#6e6e73;--line:#e0e0e5;--acc:#4f46e5;--on:#16a34a;--bad:#dc2626;
+box-sizing:border-box;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}
+@media (prefers-color-scheme:dark){:root{--bg:#121214;--card:#1c1c20;--text:#f2f2f4;--mute:#9a9aa3;--line:#2e2e35;--acc:#818cf8;--on:#4ade80;--bad:#f87171}}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--text);font-family:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;min-height:100vh;display:flex;justify-content:center}
+main{width:100%;max-width:440px;padding:24px 16px}
+h1{font-size:1.4rem;margin:0 0 4px}
+p.sub{color:var(--mute);margin:0 0 20px;font-size:.92rem}
+.card{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:16px;margin-bottom:14px}
+label{display:block;font-size:.82rem;color:var(--mute);margin:10px 0 4px}
+input{width:100%;padding:11px 12px;border-radius:10px;border:1px solid var(--line);background:var(--bg);color:var(--text);font-size:1rem}
+button{font:inherit;cursor:pointer;border:0;border-radius:10px;padding:11px 16px;font-weight:600}
+button:disabled{opacity:.6;cursor:default}
+.pri{background:var(--acc);color:#fff;width:100%;margin-top:16px}
+.row{display:flex;gap:8px}
+.row button{flex:1;background:var(--card);color:var(--text);border:1px solid var(--line)}
+.row .bad{color:var(--bad)}
+#status{color:var(--mute);font-size:.88rem;min-height:1.2em;margin-top:10px}
+.user{display:flex;align-items:center;gap:12px;padding:10px 0;border-bottom:1px solid var(--line)}
+.user:last-child{border-bottom:0}
+.av{width:42px;height:42px;border-radius:50%;background:var(--acc);color:#fff;display:grid;place-items:center;font-weight:700;border:3px solid transparent;transition:border-color .1s}
+.user.talk .av{border-color:var(--on)}
+.nm{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.st{font-size:.78rem;color:var(--mute)}
+.code{font-family:ui-monospace,monospace;background:var(--bg);padding:2px 8px;border-radius:6px}
+[hidden]{display:none!important}
+</style>
+</head>
+<body>
+<main>
+  <h1>🎙️ Sesli Sohbet</h1>
+  <p class="sub">Arkadaşlarınla aynı oda adını yazıp katılın. Ses doğrudan cihazlar arasında akar.</p>
+
+  <section id="join" class="card">
+    <label for="name">Adın</label>
+    <input id="name" maxlength="20" placeholder="Örn. Ahmet" autocomplete="off">
+    <label for="code">Oda adı (tahmin edilmesi zor bir şey yaz)</label>
+    <input id="code" maxlength="30" value="" placeholder="Örn. ustalar-4821" autocomplete="off">
+    <button class="pri" id="go">Katıl</button>
+    <div id="status"></div>
+  </section>
+
+  <section id="room" hidden>
+    <div class="card">
+      <div class="st" style="margin-bottom:6px">Oda: <span class="code" id="rc"></span></div>
+      <div id="list"></div>
+    </div>
+    <div class="row">
+      <button id="mute">🎤 Sesi kapat</button>
+      <button id="leave" class="bad">Ayrıl</button>
+    </div>
+  </section>
+  <div id="audios"></div>
+</main>
+
+<script>
+(function(){
+  var $ = function(id){return document.getElementById(id)};
+  var ICE = {iceServers:[{urls:"stun:stun.l.google.com:19302"}]};
+  var myId = "", myName = "", code = "", es = null, stream = null;
+  var peers = {}, muted = false, ac = null, raf = null, local = {talk:false, an:null};
+
+  function status(t){ $("status").textContent = t; }
+  function esc(s){ return String(s).replace(/[&<>"]/g,function(c){return {"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]}); }
+  function norm(s){
+    var m = {"ı":"i","ş":"s","ç":"c","ğ":"g","ö":"o","ü":"u"};
+    return s.toLowerCase().replace(/[ışçğöü]/g,function(c){return m[c]}).replace(/[^a-z0-9_.-]/g,"");
+  }
+  function send(to, data){
+    fetch("/signal?room="+encodeURIComponent(code)+"&id="+myId,{
+      method:"POST", headers:{"Content-Type":"application/json"},
+      body:JSON.stringify({to:to, data:data})
+    }).catch(function(){});
+  }
+
+  function render(){
+    var h = "";
+    function row(name, st, talk){
+      var ini = (name||"?").trim().charAt(0).toUpperCase();
+      h += '<div class="user'+(talk?' talk':'')+'"><div class="av">'+esc(ini)+'</div><div class="nm">'+esc(name)+'</div><div class="st">'+esc(st)+'</div></div>';
+    }
+    row(myName+" (sen)", muted?"sessiz":"bağlı", local.talk && !muted);
+    Object.keys(peers).forEach(function(id){
+      var p = peers[id];
+      var s = p.state==="connected" ? "bağlı" : (p.state==="failed" ? "bağlanamadı" : "bağlanıyor…");
+      row(p.name||"Misafir", s, p.talk);
+    });
+    $("list").innerHTML = h;
+  }
+
+  function meter(ms, obj){
+    try{
+      ac = ac || new (window.AudioContext||window.webkitAudioContext)();
+      var an = ac.createAnalyser(); an.fftSize = 512;
+      ac.createMediaStreamSource(ms).connect(an);
+      obj.an = an;
+    }catch(e){}
+  }
+  function loop(){
+    var changed = false, buf = new Uint8Array(256);
+    function lvl(o){
+      if(!o.an) return false;
+      o.an.getByteTimeDomainData(buf);
+      var m = 0; for(var i=0;i<buf.length;i++){ m = Math.max(m, Math.abs(buf[i]-128)); }
+      return m > 12;
+    }
+    var l = lvl(local); if(l !== local.talk){ local.talk = l; changed = true; }
+    Object.keys(peers).forEach(function(id){ var t = lvl(peers[id]); if(t !== peers[id].talk){ peers[id].talk = t; changed = true; } });
+    if(changed) render();
+    raf = requestAnimationFrame(loop);
+  }
+
+  function makePeer(id, name){
+    if(peers[id]){ if(name) peers[id].name = name; return peers[id]; }
+    var p = peers[id] = {name:name, pending:[], state:"new", talk:false, an:null};
+    var pc = p.pc = new RTCPeerConnection(ICE);
+    stream.getTracks().forEach(function(t){ pc.addTrack(t, stream); });
+    pc.onicecandidate = function(e){ if(e.candidate) send(id, {t:"ice", c:e.candidate.toJSON()}); };
+    pc.ontrack = function(e){
+      var a = p.audio || (p.audio = document.createElement("audio"));
+      a.autoplay = true; a.playsInline = true; a.srcObject = e.streams[0];
+      $("audios").appendChild(a); a.play().catch(function(){});
+      meter(e.streams[0], p);
+    };
+    pc.onconnectionstatechange = function(){
+      p.state = pc.connectionState;
+      if(p.state === "closed"){ drop(id); } else { render(); }
+    };
+    render();
+    return p;
+  }
+  function drop(id){
+    var p = peers[id]; if(!p) return;
+    try{ p.pc.close(); }catch(e){}
+    if(p.audio) p.audio.remove();
+    delete peers[id]; render();
+  }
+  function flush(p){
+    var q = p.pending; p.pending = [];
+    q.forEach(function(c){ p.pc.addIceCandidate(c).catch(function(){}); });
+  }
+  async function callPeer(id){
+    var p = peers[id];
+    var o = await p.pc.createOffer();
+    await p.pc.setLocalDescription(o);
+    send(id, {t:"offer", sdp:p.pc.localDescription.sdp});
+  }
+
+  async function onSignal(from, d){
+    try{
+      if(d.t === "offer"){
+        var p = makePeer(from);
+        await p.pc.setRemoteDescription({type:"offer", sdp:d.sdp});
+        flush(p);
+        var a = await p.pc.createAnswer();
+        await p.pc.setLocalDescription(a);
+        send(from, {t:"answer", sdp:p.pc.localDescription.sdp});
+      } else if(d.t === "answer"){
+        var r = peers[from]; if(!r) return;
+        await r.pc.setRemoteDescription({type:"answer", sdp:d.sdp});
+        flush(r);
+      } else if(d.t === "ice"){
+        var s = peers[from]; if(!s || !d.c) return;
+        if(s.pc.remoteDescription) s.pc.addIceCandidate(d.c).catch(function(){});
+        else s.pending.push(d.c);
+      }
+    }catch(e){ console.error(e); }
+  }
+
+  function connect(){
+    es = new EventSource("/events?room="+encodeURIComponent(code)+"&id="+myId+"&name="+encodeURIComponent(myName));
+    es.addEventListener("init", function(e){
+      Object.keys(peers).forEach(drop); // yeniden bağlanma durumunda temiz başla
+      JSON.parse(e.data).peers.forEach(function(p){ makePeer(p.id, p.name); callPeer(p.id); });
+      status("");
+    });
+    es.addEventListener("join", function(e){ var d = JSON.parse(e.data); makePeer(d.id, d.name); });
+    es.addEventListener("leave", function(e){ drop(JSON.parse(e.data).id); });
+    es.addEventListener("signal", function(e){ var d = JSON.parse(e.data); onSignal(d.from, d.data); });
+    es.addEventListener("full", function(){ status("Oda dolu (en fazla 6 kişi)."); leave(); });
+  }
+
+  async function start(){
+    myName = ($("name").value.trim() || "Misafir").slice(0,20);
+    code = norm($("code").value.trim());
+    if(!code){ status("Bir oda adı yaz."); return; }
+    if(!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia){
+      status("Bu bağlantıda mikrofon kullanılamıyor. Adres https:// ile başlamalı."); return;
+    }
+    $("go").disabled = true; status("Mikrofon izni isteniyor…");
+    try{
+      stream = await navigator.mediaDevices.getUserMedia({audio:{echoCancellation:true, noiseSuppression:true, autoGainControl:true}});
+    }catch(e){
+      status("Mikrofona erişilemedi [" + (e && e.name || "hata") + "]. Tarayıcı izinlerini kontrol et.");
+      $("go").disabled = false; return;
+    }
+    try{ var cfg = await (await fetch("/config")).json(); if(cfg.iceServers) ICE = {iceServers:cfg.iceServers}; }catch(e){}
+    myId = Math.random().toString(36).slice(2,10);
+    $("join").hidden = true; $("room").hidden = false; $("rc").textContent = code;
+    meter(stream, local); loop(); render(); connect();
+  }
+
+  function leave(){
+    if(es){ es.close(); es = null; }
+    Object.keys(peers).forEach(drop);
+    if(stream) stream.getTracks().forEach(function(t){t.stop()});
+    if(raf) cancelAnimationFrame(raf);
+    stream = null; local = {talk:false, an:null}; muted = false;
+    $("mute").textContent = "🎤 Sesi kapat";
+    $("room").hidden = true; $("join").hidden = false; $("go").disabled = false;
+  }
+
+  $("go").onclick = start;
+  $("leave").onclick = function(){ leave(); status(""); };
+  $("mute").onclick = function(){
+    muted = !muted;
+    if(stream) stream.getAudioTracks().forEach(function(t){ t.enabled = !muted; });
+    $("mute").textContent = muted ? "🔇 Sesi aç" : "🎤 Sesi kapat";
+    render();
+  };
+  window.addEventListener("pagehide", function(){ if(es) es.close(); });
+})();
+</script>
+</body>
+</html>
