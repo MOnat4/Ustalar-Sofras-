@@ -211,11 +211,12 @@ button:disabled{opacity:.6;cursor:default}
       var d = JSON.parse(e.data);
       Object.keys(peers).forEach(drop); // yeniden bağlanma durumunda temiz başla
       d.peers.forEach(function(p){ makePeer(p.id, p.name); callPeer(p.id); });
+      cueVer = d.cues || {}; preloadCues();
       setBoard(d.board);
       status("");
     });
-    es.addEventListener("board", function(e){ setBoard(JSON.parse(e.data).board); });
-    es.addEventListener("play", function(e){ var d = JSON.parse(e.data); playLocal(d.slot, d.v, d.sname, d.name); });
+    es.addEventListener("board", function(e){ var d = JSON.parse(e.data); setBoard(d.board); });
+    es.addEventListener("play", function(e){ var d = JSON.parse(e.data); playLocal(d.slot, d.v, d.sname, d.name, d.cue); });
     es.addEventListener("join", function(e){ var d = JSON.parse(e.data); makePeer(d.id, d.name); });
     es.addEventListener("leave", function(e){ drop(JSON.parse(e.data).id); });
     es.addEventListener("signal", function(e){ var d = JSON.parse(e.data); onSignal(d.from, d.data); });
@@ -257,7 +258,7 @@ button:disabled{opacity:.6;cursor:default}
   }
 
   // ---------- Ses tahtası ----------
-  var SLOTS = 8, MAXB = 2 * 1024 * 1024, board = [], bufs = {}, active = [], mg = null, vol = 0.8;
+  var SLOTS = 8, MAXB = 2 * 1024 * 1024, board = [], cueVer = {}, bufs = {}, active = [], mg = null, vol = 0.8;
   function bmsg(t){ $("bmsg").textContent = t; }
   function bq(slot){ return "room="+encodeURIComponent(code)+"&id="+myId+"&slot="+slot; }
   function fileUrl(slot, v){ return "/sound/file?room="+encodeURIComponent(code)+"&slot="+slot+"&v="+v; }
@@ -265,15 +266,21 @@ button:disabled{opacity:.6;cursor:default}
     if(!mg){ mg = ac.createGain(); mg.gain.value = vol; mg.connect(ac.destination); }
     return mg;
   }
-  function getBuf(slot, v){
-    var k = code+":"+slot+":"+v;
+  function loadBuf(k, url){
     if(!bufs[k]){
-      bufs[k] = fetch(fileUrl(slot, v)).then(function(r){ if(!r.ok) throw new Error("indirilemedi"); return r.arrayBuffer(); })
+      bufs[k] = fetch(url).then(function(r){ if(!r.ok) throw new Error("indirilemedi"); return r.arrayBuffer(); })
         .then(function(ab){ return new Promise(function(ok, bad){ ac.decodeAudioData(ab, ok, bad); }); });
       bufs[k].catch(function(){ delete bufs[k]; });
     }
     return bufs[k];
   }
+  function getBuf(slot, v){ return loadBuf(code+":"+slot+":"+v, fileUrl(slot, v)); }
+  function cueBuf(kind){
+    var v = cueVer[kind];
+    if(!v) return Promise.reject(new Error("ses yok"));
+    return loadBuf("cue:"+kind+":"+v, "/sound/cue?kind="+kind+"&v="+v);
+  }
+  function preloadCues(){ if(ac) ["join","leave"].forEach(function(k){ cueBuf(k).catch(function(){}); }); }
   function setBoard(b){
     board = Array.isArray(b) ? b : [];
     var h = "";
@@ -294,15 +301,19 @@ button:disabled{opacity:.6;cursor:default}
     var el = $("slot"+slot); if(!el) return;
     el.classList.add("hit"); setTimeout(function(){ el.classList.remove("hit"); }, 180);
   }
-  function playLocal(slot, v, sname, who){
-    flash(slot); bmsg(who + " → " + sname);
-    if(!ac) return;
-    try{ ac.resume(); }catch(e){}
-    getBuf(slot, v).then(function(buf){
+  function playBuffer(p){
+    p.then(function(buf){
       var src = ac.createBufferSource(); src.buffer = buf; src.connect(master()); src.start();
       active.push(src);
       src.onended = function(){ var i = active.indexOf(src); if(i >= 0) active.splice(i, 1); };
     }).catch(function(){ bmsg("Ses çalınamadı."); });
+  }
+  function playLocal(slot, v, sname, who, cue){
+    if(cue){ bmsg(who + (cue === "join" ? " odaya girdi 🔔" : " odadan çıktı 🚪")); }
+    else { flash(slot); bmsg(who + " → " + sname); }
+    if(!ac) return;
+    try{ ac.resume(); }catch(e){}
+    playBuffer(cue ? cueBuf(cue) : getBuf(slot, v));
   }
   function stopSounds(){
     active.forEach(function(s){ try{ s.stop(); }catch(e){} });

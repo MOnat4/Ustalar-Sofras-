@@ -33,6 +33,15 @@ Sohbet sırasında sağdaki kırmızı butonlar ses efekti çalar. 8 yer vardır
 - Kulaklık kullanmayanlarda efekt sesi mikrofona karışıp yankı yapabilir.
 - Sınırları server.js'in en üstünden değiştirebilirsin (SLOTS, MAX_SOUND, MAX_TOTAL).
 
+## Giriş ve çıkış sesleri
+Biri odaya girince `sesler/giris.mp3`, odadan çıkınca `sesler/cikis.mp3` odadaki DİĞER herkeste çalar
+(giren ya da çıkan kişi kendi sesini duymaz). Odayı kimse ayarlamaz, bu sesler hep açıktır.
+- Sesleri değiştirmek için `sesler` klasöründeki dosyaları AYNI İSİMLERLE (giris.mp3, cikis.mp3) değiştir.
+  GitHub'da yeni dosyaları yükleyince Render kendisi yeniden yayınlar.
+- Dosya yoksa o ses çalmaz, sunucu bir uyarı yazar ama çalışmaya devam eder.
+- Kısa kopmalarda (3 saniyeden az) ve sayfa yenilemede çalmaz.
+- Bir kişinin kendi cihazında kısmak için "Efekt sesi" çubuğunu kullanabilir.
+
 ## 3) Bazı kişiler birbirini duyamıyorsa (isteğe bağlı TURN)
 Çok kısıtlı ağlarda (okul, ofis, bazı mobil operatörler) doğrudan bağlantı kurulamayabilir.
 Bir TURN servisine (örn. ücretsiz katmanı olan Metered veya Open Relay) kayıt olup

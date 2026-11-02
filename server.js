@@ -17,6 +17,18 @@ const KEEP_EMPTY_MS = 10 * 60 * 1000;     // oda boşalınca sesler bu kadar sü
 const rooms = new Map();   // oda -> Map(id -> {res, name, lastPlay})
 const boards = new Map();  // oda -> {slots: [ {name, mime, buf, v} | null ], timer}
 let totalBytes = 0, soundSeq = 0;
+// --- Sabit giriş / çıkış sesleri: sesler/giris.mp3 ve sesler/cikis.mp3 ---
+const cueData = {}; // tür -> {buf, v}
+[["join", "giris.mp3"], ["leave", "cikis.mp3"]].forEach(([kind, file]) => {
+  try {
+    const buf = fs.readFileSync(path.join(__dirname, "sesler", file));
+    cueData[kind] = { buf, v: require("crypto").createHash("md5").update(buf).digest("hex").slice(0, 8) };
+  } catch (e) {
+    console.log("Uyarı: sesler/" + file + " bulunamadı, " + (kind === "join" ? "giriş" : "çıkış") + " sesi çalmayacak.");
+  }
+});
+const pendingLeave = new Map(); // "oda:id" -> zamanlayıcı (kısa kopmalarda çıkış sesi çalmasın diye)
+const LEAVE_DELAY_MS = 3000;
 
 const cleanKey = (s, n) => String(s || "").toLowerCase().replace(/[^a-z0-9_.-]/g, "").slice(0, n);
 const cleanName = (s) => String(s || "").replace(/[<>&"]/g, "").trim().slice(0, 20) || "Misafir";
@@ -39,6 +51,20 @@ function getBoard(room) {
 function boardMeta(room) {
   const b = boards.get(room);
   return Array.from({ length: SLOTS }, (_, i) => (b && b.slots[i] ? { name: b.slots[i].name, v: b.slots[i].v } : null));
+}
+function cuesOf() {
+  return { join: cueData.join ? cueData.join.v : null, leave: cueData.leave ? cueData.leave.v : null };
+}
+function sendBoard(room) {
+  broadcast(room, "board", { board: boardMeta(room) });
+}
+// Giriş / çıkış sesi: odadaki diğer herkese çalınır (olayı yaşayan kişiye değil)
+function cue(room, kind, whoId, whoName) {
+  const m = rooms.get(room);
+  if (!cueData[kind] || !m) return;
+  m.forEach((c, mid) => {
+    if (mid !== whoId) sse(c.res, "play", { name: whoName, cue: kind });
+  });
 }
 function dropBoard(room) {
   const b = boards.get(room);
@@ -123,9 +149,15 @@ const server = http.createServer((req, res) => {
 
     const others = [];
     members.forEach((m, mid) => others.push({ id: mid, name: m.name }));
-    sse(res, "init", { peers: others, board: boardMeta(room) });
+    sse(res, "init", { peers: others, board: boardMeta(room), cues: cuesOf() });
     members.forEach((m) => sse(m.res, "join", { id, name }));
     members.set(id, { res, name, lastPlay: 0 });
+
+    // Kısa süre önce çıkıp dönen kişi (sayfa yenileme, kopma) için giriş sesi çalma
+    const pkey = room + ":" + id;
+    const pend = pendingLeave.get(pkey);
+    if (pend) { clearTimeout(pend); pendingLeave.delete(pkey); }
+    else if (!old) cue(room, "join", id, name);
 
     const ka = setInterval(() => res.write(": ping\n\n"), 20000);
     req.on("close", () => {
@@ -134,6 +166,9 @@ const server = http.createServer((req, res) => {
       if (cur && cur.get(id) && cur.get(id).res === res) {
         cur.delete(id);
         cur.forEach((m) => sse(m.res, "leave", { id }));
+        const lk = room + ":" + id;
+        clearTimeout(pendingLeave.get(lk));
+        pendingLeave.set(lk, setTimeout(() => { pendingLeave.delete(lk); cue(room, "leave", id, name); }, LEAVE_DELAY_MS));
         if (cur.size === 0) {
           rooms.delete(room);
           const b = boards.get(room);
@@ -203,10 +238,23 @@ const server = http.createServer((req, res) => {
         if (totalBytes + buf.length > MAX_TOTAL) { res.writeHead(507); return res.end(); }
         b.slots[slot] = { name: cleanSound(url.searchParams.get("name")), mime, buf, v: ++soundSeq };
         totalBytes += buf.length;
-        broadcast(room, "board", { board: boardMeta(room) });
+        sendBoard(room);
         res.writeHead(204); res.end();
       });
       return;
+    }
+
+    // Sabit giriş/çıkış sesi dosyası
+    if (req.method === "GET" && P === "/sound/cue") {
+      const c = cueData[url.searchParams.get("kind")];
+      if (!c) { res.writeHead(404); return res.end(); }
+      res.writeHead(200, {
+        "Content-Type": "audio/mpeg",
+        "Content-Length": c.buf.length,
+        "Cache-Control": "public, max-age=31536000, immutable",
+        "X-Content-Type-Options": "nosniff",
+      });
+      return res.end(c.buf);
     }
 
     if (req.method === "POST" && P === "/sound/delete") {
@@ -215,7 +263,7 @@ const server = http.createServer((req, res) => {
       if (b && b.slots[slot]) {
         totalBytes -= b.slots[slot].buf.length;
         b.slots[slot] = null;
-        broadcast(room, "board", { board: boardMeta(room) });
+        sendBoard(room);
       }
       res.writeHead(204); return res.end();
     }
