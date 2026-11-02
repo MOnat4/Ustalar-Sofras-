@@ -27,8 +27,9 @@ const cueData = {}; // tür -> {buf, v}
     console.log("Uyarı: sesler/" + file + " bulunamadı, " + (kind === "join" ? "giriş" : "çıkış") + " sesi çalmayacak.");
   }
 });
-const pendingLeave = new Map(); // "oda:id" -> zamanlayıcı (kısa kopmalarda çıkış sesi çalmasın diye)
-const LEAVE_DELAY_MS = 3000;
+// Habersiz kopmalarda (internet gitti) çıkış sesi kısa süre bekletilir; kişi "Ayrıl"a basarsa ya da sekmeyi kapatırsa anında çalar.
+const pendingLeave = new Map(); // "oda:id" -> {timer, name}
+const LEAVE_DELAY_MS = 2000;
 
 const cleanKey = (s, n) => String(s || "").toLowerCase().replace(/[^a-z0-9_.-]/g, "").slice(0, n);
 const cleanName = (s) => String(s || "").replace(/[<>&"]/g, "").trim().slice(0, 20) || "Misafir";
@@ -130,6 +131,7 @@ const server = http.createServer((req, res) => {
       Connection: "keep-alive",
       "X-Accel-Buffering": "no",
     });
+    res.write("retry: 1000\n\n");
 
     if (!rooms.has(room)) rooms.set(room, new Map());
     const members = rooms.get(room);
@@ -156,7 +158,7 @@ const server = http.createServer((req, res) => {
     // Kısa süre önce çıkıp dönen kişi (sayfa yenileme, kopma) için giriş sesi çalma
     const pkey = room + ":" + id;
     const pend = pendingLeave.get(pkey);
-    if (pend) { clearTimeout(pend); pendingLeave.delete(pkey); }
+    if (pend) { clearTimeout(pend.timer); pendingLeave.delete(pkey); }
     else if (!old) cue(room, "join", id, name);
 
     const ka = setInterval(() => res.write(": ping\n\n"), 20000);
@@ -164,11 +166,14 @@ const server = http.createServer((req, res) => {
       clearInterval(ka);
       const cur = rooms.get(room);
       if (cur && cur.get(id) && cur.get(id).res === res) {
+        const bye = cur.get(id).bye;
         cur.delete(id);
         cur.forEach((m) => sse(m.res, "leave", { id }));
         const lk = room + ":" + id;
-        clearTimeout(pendingLeave.get(lk));
-        pendingLeave.set(lk, setTimeout(() => { pendingLeave.delete(lk); cue(room, "leave", id, name); }, LEAVE_DELAY_MS));
+        const prev = pendingLeave.get(lk);
+        if (prev) clearTimeout(prev.timer);
+        if (bye) { pendingLeave.delete(lk); cue(room, "leave", id, name); }
+        else pendingLeave.set(lk, { name, timer: setTimeout(() => { pendingLeave.delete(lk); cue(room, "leave", id, name); }, LEAVE_DELAY_MS) });
         if (cur.size === 0) {
           rooms.delete(room);
           const b = boards.get(room);
@@ -181,6 +186,20 @@ const server = http.createServer((req, res) => {
       }
     });
     return;
+  }
+
+  // "Ayrıl" düğmesi ya da sekme kapanışı: çıkış sesi beklemeden çalsın
+  if (req.method === "POST" && P === "/bye") {
+    const room = cleanKey(url.searchParams.get("room"), 40);
+    const id = cleanKey(url.searchParams.get("id"), 24);
+    const me = rooms.get(room) && rooms.get(room).get(id);
+    if (me) me.bye = true;
+    else {
+      const lk = room + ":" + id;
+      const t = pendingLeave.get(lk);
+      if (t) { clearTimeout(t.timer); pendingLeave.delete(lk); cue(room, "leave", id, t.name); }
+    }
+    res.writeHead(204); return res.end();
   }
 
   if (req.method === "POST" && P === "/signal") {

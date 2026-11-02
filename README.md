@@ -39,8 +39,16 @@ Biri odaya girince `sesler/giris.mp3`, odadan çıkınca `sesler/cikis.mp3` odad
 - Sesleri değiştirmek için `sesler` klasöründeki dosyaları AYNI İSİMLERLE (giris.mp3, cikis.mp3) değiştir.
   GitHub'da yeni dosyaları yükleyince Render kendisi yeniden yayınlar.
 - Dosya yoksa o ses çalmaz, sunucu bir uyarı yazar ama çalışmaya devam eder.
-- Kısa kopmalarda (3 saniyeden az) ve sayfa yenilemede çalmaz.
+- Biri "Ayrıl"a basınca ya da sekmeyi kapatınca çıkış sesi hemen çalar. İnternet habersiz koparsa 2 saniye beklenir, kişi bu sürede geri dönerse hiçbir ses çalmaz.
+- Giriş ve çıkış sesleri sırayla çalar, üst üste binmez. Aynı anda çok kişi girip çıkarsa sıraya girerler.
 - Bir kişinin kendi cihazında kısmak için "Efekt sesi" çubuğunu kullanabilir.
+
+## Kişi başına ses ayarı
+Katılımcıların adının altındaki çubukla o kişinin sesini kendi cihazında ayarlarsın.
+- Çubuğun ortası (%100) normal ses seviyesidir. Sola çekince kısılır, sağa çekince %200'e kadar açılır.
+- Çift tıklayınca %100'e döner.
+- Ayar sadece senin cihazını etkiler, başkası duymaz. Kişi odadan çıkıp tekrar girse de ayar hatırlanır (isme göre, sayfayı yenilemeyene kadar).
+- %100'ün üstüne çıkınca ses yüksek ve bozuk gelebilir, kulaklıkla dikkatli aç.
 
 ## 3) Bazı kişiler birbirini duyamıyorsa (isteğe bağlı TURN)
 Çok kısıtlı ağlarda (okul, ofis, bazı mobil operatörler) doğrudan bağlantı kurulamayabilir.

@@ -31,7 +31,11 @@ button:disabled{opacity:.6;cursor:default}
 .user:last-child{border-bottom:0}
 .av{width:42px;height:42px;border-radius:50%;background:var(--acc);color:#fff;display:grid;place-items:center;font-weight:700;border:3px solid transparent;transition:border-color .1s}
 .user.talk .av{border-color:var(--on)}
-.nm{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.mid{flex:1;min-width:0}
+.nm{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.vrow{display:flex;align-items:center;gap:8px;margin-top:4px}
+.vrow input{flex:1;width:auto;min-width:0;padding:0;border:0;background:transparent;height:18px;cursor:pointer}
+.pc{font-size:.72rem;color:var(--mute);width:2.8em;text-align:right;flex:none}
 .st{font-size:.78rem;color:var(--mute)}
 .code{font-family:ui-monospace,monospace;background:var(--bg);padding:2px 8px;border-radius:6px}
 #board .bh{display:flex;justify-content:space-between;align-items:baseline;gap:8px;margin-bottom:12px}
@@ -111,19 +115,61 @@ button:disabled{opacity:.6;cursor:default}
     }).catch(function(){});
   }
 
-  function render(){
-    var h = "";
-    function row(name, st, talk){
-      var ini = (name||"?").trim().charAt(0).toUpperCase();
-      h += '<div class="user'+(talk?' talk':'')+'"><div class="av">'+esc(ini)+'</div><div class="nm">'+esc(name)+'</div><div class="st">'+esc(st)+'</div></div>';
+  var rows = {}, volByName = {};
+  // Kişi sesi: 0-%200, orta (%100) normal. %100'e kadar normal çalar, üstünde Web Audio ile güçlendirilir.
+  function applyVol(p){
+    var v = p.vol / 100;
+    if(v <= 1 || !ac || !p.stream){
+      if(p.audio){ p.audio.muted = false; p.audio.volume = Math.min(1, v); }
+      if(p.gain) p.gain.gain.value = 0;
+    } else {
+      try{
+        if(!p.gain){
+          p.gain = ac.createGain();
+          ac.createMediaStreamSource(p.stream).connect(p.gain);
+          p.gain.connect(ac.destination);
+        }
+        if(p.audio) p.audio.muted = true;
+        p.gain.gain.value = v;
+        ac.resume();
+      }catch(e){ if(p.audio){ p.audio.muted = false; p.audio.volume = 1; } }
     }
-    row(myName+" (sen)", muted?"sessiz":"bağlı", local.talk && !muted);
-    Object.keys(peers).forEach(function(id){
-      var p = peers[id];
-      var s = p.state==="connected" ? "bağlı" : (p.state==="failed" ? "bağlanamadı" : "bağlanıyor…");
-      row(p.name||"Misafir", s, p.talk);
+  }
+  function makeRow(key, isMe){
+    var el = document.createElement("div"); el.className = "user";
+    el.innerHTML = '<div class="av"></div><div class="mid"><div class="nm"></div>' +
+      (isMe ? '' : '<div class="vrow"><input type="range" min="0" max="200" step="5" value="100" title="Bu kişinin sesi. Orta = normal, çift tıkla sıfırla" aria-label="Kişinin ses düzeyi"><span class="pc">100%</span></div>') +
+      '</div><div class="st"></div>';
+    var r = {el: el, av: el.querySelector(".av"), nm: el.querySelector(".nm"), st: el.querySelector(".st"), name: null, vname: null};
+    if(!isMe){
+      r.sl = el.querySelector("input"); r.pc = el.querySelector(".pc");
+      var setV = function(v){
+        var p = peers[key]; if(!p) return;
+        p.vol = v; volByName[p.name || "Misafir"] = v; r.pc.textContent = v + "%"; applyVol(p);
+      };
+      r.sl.oninput = function(){ setV(+this.value); };
+      r.sl.ondblclick = function(){ this.value = 100; setV(100); };
+    }
+    return r;
+  }
+  function render(){
+    var list = $("list"), keys = ["_me"].concat(Object.keys(peers));
+    Object.keys(rows).forEach(function(k){ if(keys.indexOf(k) < 0){ rows[k].el.remove(); delete rows[k]; } });
+    keys.forEach(function(k){
+      var isMe = k === "_me", p = isMe ? null : peers[k];
+      var r = rows[k] || (rows[k] = makeRow(k, isMe));
+      if(!r.el.parentNode) list.appendChild(r.el);
+      var name = isMe ? myName + " (sen)" : (p.name || "Misafir");
+      if(r.name !== name){ r.name = name; r.nm.textContent = name; r.av.textContent = (name.trim().charAt(0) || "?").toUpperCase(); }
+      if(!isMe && r.vname !== name){ // isim belli olunca bu kişi için daha önce ayarlanan ses düzeyini geri yükle
+        r.vname = name;
+        var v = volByName[name] != null ? volByName[name] : 100;
+        p.vol = v; r.sl.value = v; r.pc.textContent = v + "%"; applyVol(p);
+      }
+      var st = isMe ? (muted ? "sessiz" : "bağlı") : (p.state === "connected" ? "bağlı" : (p.state === "failed" ? "bağlanamadı" : "bağlanıyor…"));
+      if(r.st.textContent !== st) r.st.textContent = st;
+      r.el.classList.toggle("talk", !!(isMe ? (local.talk && !muted) : p.talk));
     });
-    $("list").innerHTML = h;
   }
 
   function meter(ms, obj){
@@ -150,15 +196,17 @@ button:disabled{opacity:.6;cursor:default}
 
   function makePeer(id, name){
     if(peers[id]){ if(name) peers[id].name = name; return peers[id]; }
-    var p = peers[id] = {name:name, pending:[], state:"new", talk:false, an:null};
+    var p = peers[id] = {name:name, pending:[], state:"new", talk:false, an:null, vol:100, stream:null, gain:null};
     var pc = p.pc = new RTCPeerConnection(ICE);
     stream.getTracks().forEach(function(t){ pc.addTrack(t, stream); });
     pc.onicecandidate = function(e){ if(e.candidate) send(id, {t:"ice", c:e.candidate.toJSON()}); };
     pc.ontrack = function(e){
       var a = p.audio || (p.audio = document.createElement("audio"));
       a.autoplay = true; a.playsInline = true; a.srcObject = e.streams[0];
+      p.stream = e.streams[0];
       $("audios").appendChild(a); a.play().catch(function(){});
       meter(e.streams[0], p);
+      applyVol(p);
     };
     pc.onconnectionstatechange = function(){
       p.state = pc.connectionState;
@@ -246,7 +294,7 @@ button:disabled{opacity:.6;cursor:default}
   }
 
   function leave(){
-    if(es){ es.close(); es = null; }
+    if(es){ try{ navigator.sendBeacon("/bye?room="+encodeURIComponent(code)+"&id="+myId); }catch(e){} es.close(); es = null; }
     Object.keys(peers).forEach(drop);
     if(stream) stream.getTracks().forEach(function(t){t.stop()});
     if(raf) cancelAnimationFrame(raf);
@@ -301,23 +349,48 @@ button:disabled{opacity:.6;cursor:default}
     var el = $("slot"+slot); if(!el) return;
     el.classList.add("hit"); setTimeout(function(){ el.classList.remove("hit"); }, 180);
   }
-  function playBuffer(p){
-    p.then(function(buf){
+  function why(err){ return (err && (err.name || err.message)) || "hata"; }
+  function withRetry(fn){ return fn().catch(function(){ return new Promise(function(r){ setTimeout(r, 400); }).then(fn); }); }
+  // fn: ses tamponunu döndüren fonksiyon, done: ses bitince (ya da hata olursa) çağrılır
+  function playBuffer(fn, done){
+    withRetry(fn).then(function(buf){
       var src = ac.createBufferSource(); src.buffer = buf; src.connect(master()); src.start();
       active.push(src);
-      src.onended = function(){ var i = active.indexOf(src); if(i >= 0) active.splice(i, 1); };
-    }).catch(function(){ bmsg("Ses çalınamadı."); });
+      src.onended = function(){ var i = active.indexOf(src); if(i >= 0) active.splice(i, 1); if(done) done(); };
+      if(done) setTimeout(done, Math.ceil(buf.duration * 1000) + 1500);
+    }).catch(function(err){ bmsg("Ses çalınamadı (" + why(err) + ")"); if(done) done(); });
+  }
+  // Giriş/çıkış sesleri sırayla çalar, üst üste binmez
+  var cueQ = [], cuePlaying = false, CUE_MAX_AGE = 8000;
+  function enqueueCue(kind, who){
+    var now = Date.now();
+    cueQ = cueQ.filter(function(c){ return now - c.t < CUE_MAX_AGE; });
+    if(cueQ.length >= 4) return;
+    cueQ.push({kind: kind, who: who, t: now});
+    if(!cuePlaying) nextCue();
+  }
+  function nextCue(){
+    var c = cueQ.shift();
+    while(c && Date.now() - c.t > CUE_MAX_AGE) c = cueQ.shift();
+    if(!c){ cuePlaying = false; return; }
+    cuePlaying = true;
+    bmsg(c.who + (c.kind === "join" ? " odaya girdi 🔔" : " odadan çıktı 🚪"));
+    var done = false;
+    function fin(){ if(done) return; done = true; nextCue(); }
+    setTimeout(fin, 15000); // takılırsa sıra ilerlesin
+    try{ ac.resume(); }catch(e){}
+    playBuffer(function(){ return cueBuf(c.kind); }, fin);
   }
   function playLocal(slot, v, sname, who, cue){
-    if(cue){ bmsg(who + (cue === "join" ? " odaya girdi 🔔" : " odadan çıktı 🚪")); }
-    else { flash(slot); bmsg(who + " → " + sname); }
     if(!ac) return;
+    if(cue){ enqueueCue(cue, who); return; }
+    flash(slot); bmsg(who + " → " + sname);
     try{ ac.resume(); }catch(e){}
-    playBuffer(cue ? cueBuf(cue) : getBuf(slot, v));
+    playBuffer(function(){ return getBuf(slot, v); });
   }
   function stopSounds(){
     active.forEach(function(s){ try{ s.stop(); }catch(e){} });
-    active = []; bufs = {};
+    active = []; bufs = {}; cueQ = []; cuePlaying = false;
   }
   var pendingSlot = -1;
   $("slots").onclick = function(e){
@@ -362,7 +435,7 @@ button:disabled{opacity:.6;cursor:default}
     $("mute").textContent = muted ? "🔇 Sesi aç" : "🎤 Sesi kapat";
     render();
   };
-  window.addEventListener("pagehide", function(){ if(es) es.close(); });
+  window.addEventListener("pagehide", function(){ if(es){ try{ navigator.sendBeacon("/bye?room="+encodeURIComponent(code)+"&id="+myId); }catch(e){} es.close(); } });
 })();
 </script>
 </body>
