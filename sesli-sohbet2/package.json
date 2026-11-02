@@ -1,8 +1,0 @@
-{
-  "name": "sesli-sohbet",
-  "version": "1.1.0",
-  "description": "Arkadaşlar için basit sesli sohbet (WebRTC) + ses tahtası",
-  "main": "server.js",
-  "scripts": { "start": "node server.js" },
-  "engines": { "node": ">=18" }
-}
